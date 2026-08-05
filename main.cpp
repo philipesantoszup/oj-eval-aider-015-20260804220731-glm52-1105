@@ -11,6 +11,56 @@
 
 using namespace std;
 
+// Fast I/O
+char outbuf[1 << 20];
+int out_pos = 0;
+inline void flush_out() {
+    fwrite(outbuf, 1, out_pos, stdout);
+    out_pos = 0;
+}
+inline void write_char(char c) {
+    if (out_pos == sizeof(outbuf)) flush_out();
+    outbuf[out_pos++] = c;
+}
+inline void write_int(int x) {
+    if (x < 0) { write_char('-'); x = -x; }
+    char tmp[12];
+    int len = 0;
+    if (x == 0) tmp[len++] = '0';
+    while (x) { tmp[len++] = '0' + x % 10; x /= 10; }
+    while (len) write_char(tmp[--len]);
+}
+
+inline int readChar() {
+    return getchar_unlocked();
+}
+inline bool readStr(char* s, int& len) {
+    int c = readChar();
+    while (c == ' ' || c == '\n' || c == '\r') c = readChar();
+    if (c == EOF) return false;
+    len = 0;
+    while (c != ' ' && c != '\n' && c != '\r' && c != EOF) {
+        s[len++] = c;
+        c = readChar();
+    }
+    s[len] = 0;
+    return true;
+}
+inline bool readInt(int& x) {
+    int c = readChar();
+    while (c == ' ' || c == '\n' || c == '\r') c = readChar();
+    if (c == EOF) return false;
+    bool neg = false;
+    if (c == '-') { neg = true; c = readChar(); }
+    x = 0;
+    while (c >= '0' && c <= '9') {
+        x = x * 10 + (c - '0');
+        c = readChar();
+    }
+    if (neg) x = -x;
+    return true;
+}
+
 const int HASH_SIZE = 1 << 18; // 262144 slots
 const int HASH_MASK = HASH_SIZE - 1;
 const char* DB_FILE = "data.db";
@@ -49,7 +99,7 @@ void init_db() {
             close(fd);
             fd = -1;
         } else {
-            posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+            (void) posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
             return;
         }
     }
@@ -60,8 +110,8 @@ void init_db() {
         exit(1);
     }
     
-    ftruncate(fd, HASH_SIZE * sizeof(HashSlot));
-    posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+    (void) ftruncate(fd, HASH_SIZE * sizeof(HashSlot));
+    (void) posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
 }
 
 void close_db() {
@@ -76,14 +126,14 @@ int find_slot(const char* key, int key_len, bool create) {
     for (int i = 0; i < HASH_SIZE; ++i) {
         int curr = (idx + i) & HASH_MASK;
         HashSlot slot;
-        pread(fd, &slot, sizeof(HashSlot), (off_t)curr * sizeof(HashSlot));
+        (void) pread(fd, &slot, sizeof(HashSlot), (off_t)curr * sizeof(HashSlot));
         
         if (slot.key_len == 0) {
             if (create) {
                 slot.key_len = key_len;
                 slot.value_list_offset = 0;
                 memcpy(slot.key, key, key_len);
-                pwrite(fd, &slot, sizeof(HashSlot), (off_t)curr * sizeof(HashSlot));
+                (void) pwrite(fd, &slot, sizeof(HashSlot), (off_t)curr * sizeof(HashSlot));
                 return curr;
             } else {
                 return -1;
@@ -100,7 +150,7 @@ void insert_record(const char* key, int key_len, int32_t value) {
     if (idx == -1) return;
     
     HashSlot slot;
-    pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
+    (void) pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
     
     ValueNode node;
     node.next = slot.value_list_offset;
@@ -108,10 +158,10 @@ void insert_record(const char* key, int key_len, int32_t value) {
     node.deleted = 0;
     
     off_t offset = lseek(fd, 0, SEEK_END);
-    pwrite(fd, &node, sizeof(ValueNode), offset);
+    (void) pwrite(fd, &node, sizeof(ValueNode), offset);
     
     slot.value_list_offset = offset;
-    pwrite(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
+    (void) pwrite(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
 }
 
 void delete_record(const char* key, int key_len, int32_t value) {
@@ -119,16 +169,16 @@ void delete_record(const char* key, int key_len, int32_t value) {
     if (idx == -1) return;
     
     HashSlot slot;
-    pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
+    (void) pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
     
     uint64_t offset = slot.value_list_offset;
     while (offset != 0) {
         ValueNode node;
-        pread(fd, &node, sizeof(ValueNode), offset);
+        (void) pread(fd, &node, sizeof(ValueNode), offset);
         
         if (!node.deleted && node.value == value) {
             node.deleted = 1;
-            pwrite(fd, &node, sizeof(ValueNode), offset);
+            (void) pwrite(fd, &node, sizeof(ValueNode), offset);
             break;
         }
         offset = node.next;
@@ -143,13 +193,13 @@ void find_record(const char* key, int key_len) {
     }
     
     HashSlot slot;
-    pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
+    (void) pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
     
     vector<int32_t> values;
     uint64_t offset = slot.value_list_offset;
     while (offset != 0) {
         ValueNode node;
-        pread(fd, &node, sizeof(ValueNode), offset);
+        (void) pread(fd, &node, sizeof(ValueNode), offset);
         
         if (!node.deleted) {
             values.push_back(node.value);
@@ -167,56 +217,6 @@ void find_record(const char* key, int key_len) {
         }
         write_char('\n');
     }
-}
-
-// Fast I/O
-inline int readChar() {
-    return getchar_unlocked();
-}
-inline bool readStr(char* s, int& len) {
-    int c = readChar();
-    while (c == ' ' || c == '\n' || c == '\r') c = readChar();
-    if (c == EOF) return false;
-    len = 0;
-    while (c != ' ' && c != '\n' && c != '\r' && c != EOF) {
-        s[len++] = c;
-        c = readChar();
-    }
-    s[len] = 0;
-    return true;
-}
-inline bool readInt(int& x) {
-    int c = readChar();
-    while (c == ' ' || c == '\n' || c == '\r') c = readChar();
-    if (c == EOF) return false;
-    bool neg = false;
-    if (c == '-') { neg = true; c = readChar(); }
-    x = 0;
-    while (c >= '0' && c <= '9') {
-        x = x * 10 + (c - '0');
-        c = readChar();
-    }
-    if (neg) x = -x;
-    return true;
-}
-
-char outbuf[1 << 20];
-int out_pos = 0;
-inline void flush_out() {
-    fwrite(outbuf, 1, out_pos, stdout);
-    out_pos = 0;
-}
-inline void write_char(char c) {
-    if (out_pos == sizeof(outbuf)) flush_out();
-    outbuf[out_pos++] = c;
-}
-inline void write_int(int x) {
-    if (x < 0) { write_char('-'); x = -x; }
-    char tmp[12];
-    int len = 0;
-    if (x == 0) tmp[len++] = '0';
-    while (x) { tmp[len++] = '0' + x % 10; x /= 10; }
-    while (len) write_char(tmp[--len]);
 }
 
 int main() {
