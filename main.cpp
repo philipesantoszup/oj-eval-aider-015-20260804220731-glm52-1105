@@ -79,6 +79,12 @@ struct ValueNode {
     uint8_t padding[3];
 }; // 16 bytes
 
+const uint64_t NODE_BASE = HASH_SIZE * sizeof(HashSlot);
+const int MAX_NODES = 100005;
+ValueNode mem_nodes[MAX_NODES];
+int mem_node_count = 0;
+int32_t find_values[MAX_NODES];
+
 int fd = -1;
 
 uint64_t hash_str(const char* s, size_t len) {
@@ -100,6 +106,10 @@ void init_db() {
             fd = -1;
         } else {
             (void) posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+            mem_node_count = (st.st_size - NODE_BASE) / sizeof(ValueNode);
+            if (mem_node_count > 0) {
+                (void) pread(fd, mem_nodes, mem_node_count * sizeof(ValueNode), NODE_BASE);
+            }
             return;
         }
     }
@@ -112,6 +122,7 @@ void init_db() {
     
     (void) ftruncate(fd, HASH_SIZE * sizeof(HashSlot));
     (void) posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+    mem_node_count = 0;
 }
 
 void close_db() {
@@ -152,16 +163,18 @@ void insert_record(const char* key, int key_len, int32_t value) {
     HashSlot slot;
     (void) pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
     
-    ValueNode node;
+    ValueNode& node = mem_nodes[mem_node_count];
     node.next = slot.value_list_offset;
     node.value = value;
     node.deleted = 0;
     
-    off_t offset = lseek(fd, 0, SEEK_END);
+    off_t offset = NODE_BASE + mem_node_count * sizeof(ValueNode);
     (void) pwrite(fd, &node, sizeof(ValueNode), offset);
     
     slot.value_list_offset = offset;
     (void) pwrite(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
+    
+    mem_node_count++;
 }
 
 void delete_record(const char* key, int key_len, int32_t value) {
@@ -172,15 +185,24 @@ void delete_record(const char* key, int key_len, int32_t value) {
     (void) pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
     
     uint64_t offset = slot.value_list_offset;
+    uint64_t prev_offset = 0;
     while (offset != 0) {
-        ValueNode node;
-        (void) pread(fd, &node, sizeof(ValueNode), offset);
+        int node_idx = (offset - NODE_BASE) / sizeof(ValueNode);
+        ValueNode& node = mem_nodes[node_idx];
         
-        if (!node.deleted && node.value == value) {
-            node.deleted = 1;
-            (void) pwrite(fd, &node, sizeof(ValueNode), offset);
+        if (node.value == value) {
+            if (prev_offset == 0) {
+                slot.value_list_offset = node.next;
+                (void) pwrite(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
+            } else {
+                int prev_node_idx = (prev_offset - NODE_BASE) / sizeof(ValueNode);
+                ValueNode& prev_node = mem_nodes[prev_node_idx];
+                prev_node.next = node.next;
+                (void) pwrite(fd, &prev_node, sizeof(ValueNode), prev_offset);
+            }
             break;
         }
+        prev_offset = offset;
         offset = node.next;
     }
 }
@@ -195,25 +217,22 @@ void find_record(const char* key, int key_len) {
     HashSlot slot;
     (void) pread(fd, &slot, sizeof(HashSlot), (off_t)idx * sizeof(HashSlot));
     
-    vector<int32_t> values;
+    int values_cnt = 0;
     uint64_t offset = slot.value_list_offset;
     while (offset != 0) {
-        ValueNode node;
-        (void) pread(fd, &node, sizeof(ValueNode), offset);
-        
-        if (!node.deleted) {
-            values.push_back(node.value);
-        }
+        int node_idx = (offset - NODE_BASE) / sizeof(ValueNode);
+        ValueNode& node = mem_nodes[node_idx];
+        find_values[values_cnt++] = node.value;
         offset = node.next;
     }
     
-    if (values.empty()) {
+    if (values_cnt == 0) {
         write_char('n'); write_char('u'); write_char('l'); write_char('l'); write_char('\n');
     } else {
-        sort(values.begin(), values.end());
-        for (size_t i = 0; i < values.size(); ++i) {
+        sort(find_values, find_values + values_cnt);
+        for (int i = 0; i < values_cnt; ++i) {
             if (i > 0) write_char(' ');
-            write_int(values[i]);
+            write_int(find_values[i]);
         }
         write_char('\n');
     }
@@ -230,11 +249,12 @@ int main() {
     
     char op[16];
     char key[128];
+    int op_len;
     int key_len;
     int value;
     
     for (int i = 0; i < n; ++i) {
-        readStr(op, key_len);
+        readStr(op, op_len);
         if (strcmp(op, "insert") == 0) {
             readStr(key, key_len);
             readInt(value);
